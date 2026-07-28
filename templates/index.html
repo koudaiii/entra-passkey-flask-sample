@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <h2>Welcome {{ user.get("name") }}!</h2>
+
+    <img src="https://github.com/Azure-Samples/ms-identity-python-webapp-django/raw/main/static/topology.png" alt="Topology">
+
+    <ul>
+    {% if api_endpoint %}
+        <!-- If an API endpoint is declared and scopes defined, this link will show. We set this in the call an API tutorial. For this tutorial, we do not define this endpoint. -->
+        <li><a href='/call_api'>Call an API</a></li>
+    {% endif %}
+
+    <li><a href="{{ url_for('identity.logout') }}">Logout</a></li>
+    </ul>
+
+    <hr>
+    <footer style="text-align: right">{{ title }}</footer>
+</body>
+</html>

@@ -14,3 +14,13 @@ auth = Auth(
         client_credential=app.config["CLIENT_SECRET"],
         redirect_uri=app.config["REDIRECT_URI"]
 )
+
+@app.route("/")
+@auth.login_required
+def index(*, context):
+    return render_template(
+            'index.html',
+            user=context['user'],
+            title="Flask Web App Sample",
+            )
+
