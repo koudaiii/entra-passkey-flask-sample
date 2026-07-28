@@ -18,3 +18,19 @@ ms-identity-python = { git = "https://github.com/azure-samples/ms-identity-pytho
 dev = [
     "ruff>=0.16.0",
 ]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle エラー
+    "F",    # pyflakes（未使用 import / 変数など）
+    "I",    # isort（import 順）
+    "UP",   # pyupgrade（古い書き方の近代化）
+    "B",    # flake8-bugbear（バグりやすい書き方）
+    "SIM",  # flake8-simplify
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "app_config", "main"]
