@@ -97,7 +97,17 @@ mkcert の自己署名証明書で HTTPS 終端
 
 すべて [Microsoft Entra 管理センター](https://entra.microsoft.com) で行う。
 
-### 1. 外部テナントを作成する
+> [!IMPORTANT]
+> **手順 3 以降はすべて「外部テナントに切り替えた状態」で行う。**
+> 管理センターは既定でサインインに使ったワークフォース テナント（勤務先の Entra ID）を
+> 開いており、**アプリの登録**も**認証方法**も画面の見た目は外部テナントとほとんど同じ。
+> 切り替えないまま作業すると、ワークフォース テナント側にアプリが登録されてしまい、
+> `<subdomain>.ciamlogin.com` の authority ではサインインできない。
+> 各手順の前に、右上の**設定**アイコン > **ディレクトリ + サブスクリプション** で
+> 現在のディレクトリが手順 1 で作成した外部テナント（プライマリ ドメインが
+> `<subdomain>.onmicrosoft.com`）になっていることを確認すること。
+
+### 1. 外部テナントを作成する（切り替え前のテナントで行う）
 
 **Entra ID** > **概要** > **テナントを管理** > **作成** > **外部**。
 初めてなら Azure サブスクリプション不要の 30 日間無料試用版を選べる。作成には最大 30 分かかる。
@@ -112,18 +122,26 @@ mkcert の自己署名証明書で HTTPS 終端
 
 → [外部テナントの詳細を取得する](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-create-external-tenant-portal#get-the-external-tenant-details)
 
-### 3. アプリを登録する
+### 3. アプリを登録する（外部テナント）
+
+**手順 2 で切り替えた外部テナント上で行う。** ワークフォース テナントに登録しても
+このアプリからはサインインできない。
 
 **アプリの登録** > **新規登録**。サポートされるアカウントの種類は
-**この組織のディレクトリ内のアカウントのみ**（単一テナント）を選ぶ。
+**この組織のディレクトリ内のアカウントのみ**（単一テナント）を選ぶ。ここでいう
+「この組織のディレクトリ」は外部テナントを指す。
 **アプリケーション (クライアント) ID** を控える。
 
 **証明書とシークレット** > **新しいクライアント シークレット** を作成し、**値**を控える
 （この画面を離れると二度と表示されない）。
 
-→ [アプリケーションの登録](https://learn.microsoft.com/ja-jp/entra/identity-platform/quickstart-register-app)
+登録後、アプリの**概要**にある**ディレクトリ (テナント) ID** が手順 2 で控えた
+テナント ID と一致していることを確認すると、テナントを間違えていないと分かる。
 
-### 4. リダイレクト URI を登録する
+→ [外部テナントにアプリケーションを登録する](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-register-ciam-app) /
+[アプリケーションの登録](https://learn.microsoft.com/ja-jp/entra/identity-platform/quickstart-register-app)
+
+### 4. リダイレクト URI を登録する（外部テナント）
 
 **認証** > **プラットフォームを追加** > **Web** に次を追加する。
 
@@ -137,7 +155,7 @@ https://auth.<subdomain>.ciamlogin.com:3000/getAToken
 > パスキーを登録できない。そのためアプリ自体を `auth.<subdomain>.ciamlogin.com` の
 > HTTPS で配信する。
 
-### 5. ユーザー フローを作成してアプリを紐づける
+### 5. ユーザー フローを作成してアプリを紐づける（外部テナント）
 
 **External Identities** > **ユーザー フロー** でサインアップとサインインのユーザー フローを作成し、
 作成したアプリケーションを追加する。これがないとサインインできない。
@@ -145,7 +163,10 @@ https://auth.<subdomain>.ciamlogin.com:3000/getAToken
 → [ユーザー フローの作成](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-user-flow-sign-up-sign-in-customers) /
 [ユーザー フローにアプリケーションを追加する](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-user-flow-add-application)
 
-### 6. パスキーを有効にする
+### 6. パスキーを有効にする（外部テナント）
+
+ここで出てくる **Entra ID** > **セキュリティ** はワークフォース テナントにも同じ画面があるため、
+外部テナントに切り替わっているか特に間違えやすい。
 
 - **Entra ID** > **セキュリティ** > **認証方法** > **ポリシー** > **パスキー (FIDO2)** を**有効**にし、対象ユーザーを指定する
 - 同ポリシーの**構成**タブで「**セルフサービス セットアップを許可**」を**はい**にする。
@@ -184,7 +205,7 @@ TENANT_ID="<tenant-id>"
 brew install mkcert
 mkcert -install
 
-# 2. .env を用意して、上で控えた値を埋める
+# 2. .env を用意して、上で控えた **値** を埋める
 cp .env.sample .env
 
 # 3. 依存の同期と証明書の発行
@@ -471,12 +492,23 @@ hosts の設定ミスではないことが多い（`dig` は `/etc/hosts` を参
 正引き結果が実在の Microsoft 側 IP に見えても異常ではない。ループバックへの向き先確認には
 `ping` を使うこと）。
 
+### サインインで `AADSTS700016: Application with identifier ... was not found in the directory`
+
+アプリをワークフォース テナント（管理センターに最初から開いているテナント）に登録して
+しまっている。管理センターの画面は外部テナントとほとんど同じで、切り替えを忘れても
+そのまま作業できてしまうため起きやすい。
+
+右上の**設定** > **ディレクトリ + サブスクリプション** で外部テナントに**切り替え**、
+**アプリの登録**にそのアプリが見えるか確認する。見えなければ登録先を間違えているので、
+外部テナント側で「Entra 側のセットアップ」の手順 3 以降をやり直す。アプリの**概要**の
+**ディレクトリ (テナント) ID** が `.env` の `TENANT_ID` と一致しているかでも判別できる。
+
 ### パスキー一覧・作成が `403 accessDenied: Request Authorization failed` になる
 
 Graph の `fido2Methods` はアプリ専用トークン（クライアント クレデンシャル フロー）で
 呼んでいるため、**アプリケーションの許可**（委任の許可ではない）が必要。
 
-1. アプリの登録 > **API のアクセス許可** > **+ 追加** > **Microsoft Graph**
+1. **外部テナントに切り替えた状態で**アプリの登録 > **API のアクセス許可** > **+ 追加** > **Microsoft Graph**
 2. **「アプリケーションの許可」**（「委任されたアクセス許可」ではない）を選択
 3. `UserAuthenticationMethod.ReadWrite.All`（または `UserAuthMethod-Passkey.ReadWrite.All`）を追加
 4. **「[テナント名] に管理者の同意を与えます」**ボタンを押し、管理者の同意列が
