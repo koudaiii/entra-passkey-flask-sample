@@ -1,5 +1,5 @@
 def main():
-    print("Hello from flask-web-app!")
+    print("Hello from entra-passkey-flask-sample!")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,30 @@
+# .env の REDIRECT_URI からホストとポートを導出する (bootstrap / server が source する)。
+# パスキーの rp.id はテナントのドメインなので、配信ホストは REDIRECT_URI と一致している必要がある。
+
+if [ -z "${REDIRECT_URI:-}" ]; then
+  if [ ! -f .env ]; then
+    echo ".env がありません。cp .env.sample .env して値を埋めてください。" >&2
+    exit 1
+  fi
+  REDIRECT_URI=$(grep -E '^REDIRECT_URI=' .env | head -1 | cut -d= -f2- | tr -d '"'"'"' \r')
+fi
+
+if [ -z "$REDIRECT_URI" ]; then
+  echo ".env に REDIRECT_URI がありません。" >&2
+  exit 1
+fi
+
+_hostport=${REDIRECT_URI#*://}
+_hostport=${_hostport%%/*}
+
+case "$_hostport" in
+  *:*) PASSKEY_HOST=${PASSKEY_HOST:-${_hostport%%:*}}; PORT=${PORT:-${_hostport##*:}} ;;
+  *)   PASSKEY_HOST=${PASSKEY_HOST:-$_hostport};       PORT=${PORT:-443} ;;
+esac
+
+case "$REDIRECT_URI" in
+  https://*) ;;
+  *) echo "REDIRECT_URI が https ではありません: $REDIRECT_URI" >&2
+     echo "パスキーの登録には HTTPS と、rp.id と同一サイトのホスト名が必要です。" >&2
+     exit 1 ;;
+esac

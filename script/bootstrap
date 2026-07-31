@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# 依存の同期と、ローカル HTTPS 用証明書の発行。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+. script/_config
+
+uv sync
+
+if [ ! -f auth-cert.pem ] || [ ! -f auth-key.pem ]; then
+  if ! command -v mkcert >/dev/null 2>&1; then
+    echo "mkcert が必要です: brew install mkcert && mkcert -install" >&2
+    exit 1
+  fi
+  mkcert -cert-file auth-cert.pem -key-file auth-key.pem "$PASSKEY_HOST"
+  echo "証明書を発行しました: auth-cert.pem / auth-key.pem ($PASSKEY_HOST)"
+else
+  echo "証明書は既にあります: auth-cert.pem / auth-key.pem"
+fi
+
+if ! grep -q "$PASSKEY_HOST" /etc/hosts; then
+  echo
+  echo "/etc/hosts に次の行を追加してください:"
+  echo "  127.0.0.1  $PASSKEY_HOST"
+fi

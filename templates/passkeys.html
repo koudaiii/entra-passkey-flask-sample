@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; }
+        table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+        th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; font-size: 0.9rem; }
+        th { background: #f4f4f4; }
+        #message { padding: 0.75rem; margin: 1rem 0; border-radius: 4px; display: none; }
+        #message.error { background: #fdecea; border: 1px solid #f5c2c0; }
+        #message.success { background: #eaf6ec; border: 1px solid #b8e0c0; }
+        button { padding: 0.4rem 0.8rem; }
+        .controls { display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <p>{{ user.get("name") }} さんのパスキー</p>
+
+    <div id="message"></div>
+
+    <div class="controls">
+        <input id="display-name" type="text" placeholder="名前 (省略可)" />
+        <button id="add">パスキーを追加</button>
+        <button id="reload">再読み込み</button>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>名前</th>
+                <th>種類</th>
+                <th>モデル</th>
+                <th>作成日時</th>
+                <th>最終使用</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+    </table>
+
+    <p><a href="/">トップへ</a> | <a href="{{ url_for('identity.logout') }}">サインアウト</a></p>
+
+<script>
+const API = "/api/passkeys";
+
+// --- base64url <-> ArrayBuffer -------------------------------------------------
+
+function base64urlToBuffer(value) {
+    const padding = "=".repeat((4 - (value.length % 4)) % 4);
+    const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+    return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)).buffer;
+}
+
+function bufferToBase64url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Graph が excludeCredentials で返す ID は「base64url + 末尾にパディング数を表す数字1桁」
+// という独自形式なので、標準の base64url デコードでは壊れる。
+function decodeGraphCredentialId(id) {
+    const match = id.match(/^(.*?)(\d)$/);
+    if (!match) throw new Error("Microsoft Graph の credential ID 形式が不正です");
+    const [, body, padCount] = match;
+    return base64urlToBuffer(body + "=".repeat(parseInt(padCount, 10)));
+}
+
+// --- API ----------------------------------------------------------------------
+
+async function api(path, options) {
+    const response = await fetch(path, options);
+    if (response.status === 204) return null;
+    // login_required は未認証時にログインページの HTML を返すので、JSON かどうかで判別する。
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+        throw new Error("セッションが切れました。ページを再読み込みしてサインインしてください。");
+    }
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    return body;
+}
+
+// --- UI -----------------------------------------------------------------------
+
+const messageBox = document.getElementById("message");
+
+function showMessage(text, kind) {
+    messageBox.textContent = text;
+    messageBox.className = kind;
+    messageBox.style.display = "block";
+}
+
+function clearMessage() {
+    messageBox.style.display = "none";
+}
+
+function formatDate(value) {
+    return value ? new Date(value).toLocaleString() : "-";
+}
+
+function render(passkeys) {
+    const rows = document.getElementById("rows");
+    rows.textContent = "";
+    if (passkeys.length === 0) {
+        const cell = rows.insertRow().insertCell();
+        cell.colSpan = 6;
+        cell.textContent = "登録されたパスキーはありません。";
+        return;
+    }
+    for (const passkey of passkeys) {
+        const row = rows.insertRow();
+        for (const value of [
+            passkey.displayName || "(名前なし)",
+            passkey.passkeyType || "-",
+            passkey.model || "-",
+            formatDate(passkey.createdDateTime),
+            formatDate(passkey.lastUsedDateTime),
+        ]) {
+            row.insertCell().textContent = value;
+        }
+        const button = document.createElement("button");
+        button.textContent = "削除";
+        run(button, () => remove(passkey), (name) => `パスキー「${name}」を削除しました。`);
+        row.insertCell().appendChild(button);
+    }
+}
+
+async function reload() {
+    const body = await api(API);
+    render(body.passkeys);
+}
+
+async function add() {
+    const publicKey = await api(`${API}/creation-options`);
+    publicKey.challenge = base64urlToBuffer(publicKey.challenge);
+    publicKey.user.id = base64urlToBuffer(publicKey.user.id);
+    publicKey.excludeCredentials = (publicKey.excludeCredentials || []).map((credential) => ({
+        ...credential,
+        id: decodeGraphCredentialId(credential.id),
+    }));
+
+    // Graph は userVerification: "required" を要求しつつ、credProtect 拡張には
+    // credentialProtectionPolicy: "userVerificationOptional" (要求レベルより低い) を
+    // enforceCredentialProtectionPolicy: true とともに返すことがある。矛盾した組み合わせを
+    // 認証器に強制すると NotSupportedError になるため、矛盾しているときは強制を外す。
+    const extensions = publicKey.extensions;
+    if (extensions?.enforceCredentialProtectionPolicy) {
+        extensions.enforceCredentialProtectionPolicy = false;
+    }
+
+    let credential;
+    try {
+        credential = await navigator.credentials.create({ publicKey });
+    } catch (error) {
+        console.error(error);
+        if (error.name === "NotSupportedError") {
+            throw new Error(
+                "この認証器はリクエストされたパスキーのポリシーに対応していません。" +
+                "別の認証器を試すか、Entra ID のパスキー (FIDO2) ポリシー設定を確認してください。"
+            );
+        }
+        // NotAllowedError はキャンセル・タイムアウト・登録済みを区別できないためまとめて案内する。
+        throw new Error(
+            "パスキーを作成できませんでした。タイムアウト、キャンセル、" +
+            "またはこのデバイスに登録済みの可能性があります。"
+        );
+    }
+
+    const nameInput = document.getElementById("display-name");
+    await api(API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            publicKeyCredential: {
+                id: credential.id,
+                response: {
+                    attestationObject: bufferToBase64url(credential.response.attestationObject),
+                    clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+                },
+            },
+            displayName: nameInput.value,
+        }),
+    });
+    nameInput.value = "";
+}
+
+async function remove(passkey) {
+    const name = passkey.displayName || "(名前なし)";
+    if (!confirm(`パスキー「${name}」を削除しますか?`)) return null;
+    await api(`${API}/${encodeURIComponent(passkey.id)}`, { method: "DELETE" });
+    return name;
+}
+
+// クリックハンドラの共通処理: メッセージ表示・ボタン無効化・一覧の再取得。
+// action が null を返したときは中断扱いにして成功メッセージを出さない。
+function run(button, action, successMessage) {
+    button.onclick = async () => {
+        clearMessage();
+        button.disabled = true;
+        try {
+            const result = await action();
+            await reload();
+            if (successMessage && result !== null) {
+                showMessage(successMessage(result), "success");
+            }
+        } catch (error) {
+            showMessage(error.message, "error");
+        } finally {
+            button.disabled = false;
+        }
+    };
+}
+
+const addButton = document.getElementById("add");
+run(addButton, add, () => "パスキーを追加しました。");
+run(document.getElementById("reload"), () => null, null);
+
+if (!window.PublicKeyCredential) {
+    showMessage("このブラウザは WebAuthn に対応していません。", "error");
+    addButton.disabled = true;
+}
+
+reload().catch((error) => showMessage(error.message, "error"));
+</script>
+</body>
+</html>

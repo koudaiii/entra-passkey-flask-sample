@@ -1,5 +1,5 @@
 [project]
-name = "flask-web-app"
+name = "entra-passkey-flask-sample"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -16,6 +16,7 @@ ms-identity-python = { git = "https://github.com/azure-samples/ms-identity-pytho
 
 [dependency-groups]
 dev = [
+    "pytest>=9.1.1",
     "ruff>=0.16.0",
 ]
 
@@ -34,3 +35,7 @@ select = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "app_config", "main"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

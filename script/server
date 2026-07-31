@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ローカル HTTPS で開発サーバを起動する。
+# ホストとポートは .env の REDIRECT_URI から導出する。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+. script/_config
+
+if [ ! -f auth-cert.pem ] || [ ! -f auth-key.pem ]; then
+  echo "証明書がありません。script/bootstrap を実行してください。" >&2
+  exit 1
+fi
+
+echo "https://${PASSKEY_HOST}:${PORT}/passkeys"
+exec uv run flask --app app run \
+  --host 127.0.0.1 \
+  --port "$PORT" \
+  --cert auth-cert.pem \
+  --key auth-key.pem \
+  "$@"
