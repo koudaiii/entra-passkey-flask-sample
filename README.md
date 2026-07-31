@@ -33,20 +33,20 @@ PIN でユーザー本人を確認したうえで秘密鍵で署名し、サー�
   Relying Party（依拠当事者）。ユーザーのサインインとパスキー管理 API 双方の認可を担う
 
 ```
-┌──────────────┐         WebAuthn API         ┌───────────────┐
-│ ブラウザ     │ ◄──────────────────────────► │ 認証器        │
-│ (JavaScript) │   navigator.credentials.*    │ (Touch ID 等) │
-└──────────────┘                              └───────────────┘
-       │ HTTPS (このアプリ自身が rp.id のサブドメインで配信)
-       ▼
-┌────────────────────────┐       ユーザー委任トークン       ┌───────────────────┐
-│ Flask アプリ           │────────────────────────────────► │ Entra External ID │
-│ (ローカル :3000)       │ ◄────────────────────────────────│ (サインイン)      │
-│                        │                                  └───────────────────┘
-│ - / : サインイン後 TOP │        アプリ専用トークン        ┌──────────────────────┐
-│ - /passkeys : 管理UI   │────────────────────────────────► │ Microsoft Graph beta │
-│ - /api/passkeys/*      │ ◄────────────────────────────────│ fido2Methods API     │
-└────────────────────────┘        (パスキーの CRUD)         └──────────────────────┘
++--------------+        WebAuthn API        +------------------+
+|   Browser    | <------------------------> |  Authenticator   |
+| (JavaScript) |  navigator.credentials.*   | (Touch ID, etc.) |
++--------------+                            +------------------+
+       | HTTPS (this app serves a subdomain of rp.id itself)
+       v
++----------------------------------+   delegated user token   +----------------------+
+| Flask app                        |------------------------> | Entra External ID    |
+| (local :3000)                    | <------------------------| (sign-in)            |
+|                                  |                          +----------------------+
+| - /               : top page     |   app-only token         +----------------------+
+| - /passkeys       : passkey UI   |------------------------> | Microsoft Graph beta |
+| - /api/passkeys/* : Graph proxy  | <------------------------| fido2Methods API     |
++----------------------------------+   (passkey CRUD)         +----------------------+
 ```
 
 このアプリでの役割分担:
@@ -283,18 +283,18 @@ Microsoft は現時点でパスキー登録の組み込み UI を提供してい
 ### フロー
 
 ```
-ブラウザ                          Flask                      Microsoft Graph (beta)
-  │                                │                                │
-  │ GET /api/passkeys/creation-options                              │
-  │───────────────────────────────>│  app token (client credentials)│
-  │                                │───────────────────────────────>│
-  │<─ publicKey (素通し) ───────────│<── creationOptions ────────────│
-  │                                │                                │
-  │ navigator.credentials.create() │                                │
-  │  (rp.id = <subdomain>.ciamlogin.com)                            │
-  │                                │                                │
-  │ POST /api/passkeys             │                                │
-  │───────────────────────────────>│───────────────────────────────>│
+Browser                          Flask                   Microsoft Graph (beta)
+  |                                |                                |
+  | GET /api/passkeys/creation-options                              |
+  |------------------------------->|  app token (client credentials)|
+  |                                |------------------------------->|
+  |<- publicKey (passthrough) -----|<-- creationOptions ------------|
+  |                                |                                |
+  | navigator.credentials.create() |                                |
+  |  (rp.id = <subdomain>.ciamlogin.com)                            |
+  |                                |                                |
+  | POST /api/passkeys             |                                |
+  |------------------------------->|------------------------------->|
 ```
 
 `creationOptions` の `challenge` / `user.id` / `excludeCredentials[].id` は Graph が base64url
