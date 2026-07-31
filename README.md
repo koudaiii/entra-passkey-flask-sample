@@ -2,24 +2,37 @@
 
 Microsoft Entra External ID でサインインし、[パスキー (FIDO2)](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-sign-in-with-passkey) を
 登録、一覧、削除できる最小構成の Flask アプリ。
+パスキーは登録先のドメインに縛られるため、このアプリは `localhost` では動かない。
+ローカルでもテナントのサブドメインを HTTPS で自分自身から配信する構成になっている。
 
 パスキーの操作は Microsoft Graph beta の
 [fido2AuthenticationMethod](https://learn.microsoft.com/en-us/graph/api/resources/fido2authenticationmethod?view=graph-rest-beta)
-をサーバ側から呼んでいる。
+をサーバ側から呼んでいる。beta エンドポイントは Microsoft が本番アプリケーションでの
+使用対象外としており、このリポジトリもローカル検証用に留まる
+（移行先については「本番運用に向けた検討事項」を参照）。
 
 ## パスキーとは
 
-**パスキー (Passkey)** は、パスワードを置き換える FIDO2/WebAuthn 標準ベースの認証方式。
-公開鍵暗号を使い、次の2つを1組にして扱う。
+パスワードによるサインインでは、ユーザーとサービスが同じ文字列を共有し、それを突き合わせて
+本人を確かめる。この共有をやめ、公開鍵暗号の鍵ペアに置き換えたものが **パスキー (Passkey)** で、
+FIDO2/WebAuthn として標準化されている。鍵は次の2つを1組にして扱う。
 
 - **秘密鍵**: ユーザーのデバイス（スマホ、PC、セキュリティキー等）の中だけに存在し、外に出ない
 - **公開鍵**: サインイン先のサービス（今回は Entra External ID テナント）に登録される
 
 サインイン時はサービスが出した「チャレンジ（ランダム値）」に対して、デバイスが生体認証や
 PIN でユーザー本人を確認したうえで秘密鍵で署名し、サービス側が公開鍵で検証する。
-パスワードのようにサーバへ送る「共有の秘密」自体が存在しないため、フィッシングや
-パスワード使い回しや漏えいの影響を受けない。iCloud キーチェーンや Google パスワード
-マネージャーなどを介して複数デバイス間で同期させることもできる。
+サーバが保持するのは公開鍵だけなので、サーバ側から漏れた情報でサインインすることはできず、
+同じ秘密鍵が他のサービスに使い回されることもない。
+
+フィッシングに強いのは、これとは別の仕組みによる。ブラウザは署名を作る前に、いま開いている
+ページの origin と、資格情報に紐づいた `rp.id`（Relying Party ID、実質はサービスのドメイン）が
+同一サイトかを確かめ、一致しなければ秘密鍵を使わせない。偽サイトはドメインが違う時点で
+署名を得られないため、ユーザーが騙されても資格情報そのものは渡らない。この突き合わせが、
+このリポジトリのローカル開発環境の形をほぼ決めている。
+
+秘密鍵は iCloud キーチェーンや Google パスワードマネージャーなどを介して、複数デバイス間で
+同期させることもできる。
 
 ## 全体アーキテクチャ
 
@@ -173,7 +186,9 @@ https://auth.<subdomain>.ciamlogin.com:3000/getAToken
   パスキー プロファイルでは種類に **Synced** と **Device-bound** の両方、
   **構成証明の強制**を**いいえ**にしておくと同期パスキーも使える
 - アプリの登録 > **API のアクセス許可**で **`UserAuthMethod-Passkey.ReadWrite.All`** の
-  **アプリケーション**許可を追加し、**管理者の同意を与える**
+  **アプリケーション**許可を追加し、**管理者の同意を与える**。これが `fido2Methods` に対する
+  最小権限で、上位の `UserAuthenticationMethod.ReadWrite.All` でも呼べる
+  （beta のリファレンスは後者しか載せていないが、v1.0 側には両方が載っている）
 
 → [パスキーでサインインする](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-sign-in-with-passkey)
 
@@ -259,20 +274,20 @@ WebAuthn を伴う登録フロー全体は自動テスト対象外で、ブラ�
 |---|---|---|
 | `app.py` | `auth.init_app(app)` + `register_blueprint` + 既存 `/` | 上記 |
 | `auth.py` | `Auth(app=None, ...)` の生成のみ（循環 import を避けるため `ms-identity-python` の Application Factory パターンに従い、app.py とは別モジュールにしている） | identity |
-| `graph_passkeys.py` | Graph の薄いクライアント。アプリトークン取得と CRUD 4関数。**Flask 非依存**で単体テスト可能 | msal, requests |
+| `graph_passkeys.py` | Graph の薄いクライアント。アプリトークン取得、CRUD 4関数、レスポンス整形。**Flask 非依存**で単体テスト可能 | msal, requests |
 | `passkeys.py` | Blueprint。ルーティング、JSON 整形、エラー変換 | flask, auth, graph_passkeys |
 | `templates/passkeys.html` | WebAuthn を呼ぶ素の JavaScript（React / Vite などのビルド環境は導入しない） | — |
 | `script/_config` | `.env` の `REDIRECT_URI` からホストとポートを導出（bootstrap / server が source する） | — |
 
 ## 設計
 
-### 目的と参照サンプルとの構成差
+### 参照サンプルとの構成差
 
-既存の Flask アプリ（`ms-identity-python` の `identity.flask.Auth` でサインイン済み）に、
-ユーザー自身がパスキーを **登録、一覧、削除** できる最小限の JSON API と管理ページを追加している。
-Microsoft は現時点でパスキー登録の組み込み UI を提供していないため、FIDO2 プロビジョニング API
+Microsoft はパスキー登録の組み込み UI を提供していないので、管理ページは自前で作るしかない。
+サインインそのものは `ms-identity-python` の `identity.flask.Auth` に任せ、その上に
+FIDO2 プロビジョニング API
 （[fido2AuthenticationMethod](https://learn.microsoft.com/en-us/graph/api/resources/fido2authenticationmethod?view=graph-rest-beta)）
-を使って自前で実装した。
+を叩く JSON API と管理ページを足している。
 
 参考にした [passkey-sample (React SPA)](https://github.com/Azure-Samples/ms-identity-ciam-native-javascript-samples/tree/main/passkey-sample)
 は Graph をアプリ専用トークン（client credentials）で呼ぶために **client secret をブラウザに置き**、
@@ -312,6 +327,10 @@ def list_passkeys(user_id: str) -> dict          # Graph の生レスポンス
 def get_creation_options(user_id: str) -> dict   # publicKey の中身
 def create_passkey(user_id: str, payload: dict) -> dict
 def delete_passkey(user_id: str, passkey_id: str) -> None
+
+# Graph を呼ばないので、requests のモックなしでそのまま呼べる
+def summarize_passkeys(graph_response: dict) -> list[dict]  # 一覧に出す項目だけ抜き出す
+def generate_passkey_name() -> str  # displayName 省略時の名前。create_passkey が内部で使う
 ```
 
 Graph がエラーを返した場合は `GraphError(status_code, message)` を送出し、`passkeys.py` が
@@ -363,15 +382,16 @@ Graph の `value[]` から必要な項目のみを抜き出して返す。日付
 
 ### ブラウザ側 JS (`templates/passkeys.html`) の設計
 
-参照サンプルから移植したのは以下の3点のみ。
+参照サンプルから移植したのは次の2点のみ。
 
 1. `base64urlToBuffer` / `bufferToBase64url`（`graphServiceUtils.js` 相当）
 2. **`decodeGraphCredentialId`**（Graph が返す `excludeCredentials[].id` は
    「base64url + 末尾にパディング数を表す数字1桁」という独自形式で、標準の base64url
    デコードでは壊れるため、`graphServiceUtils.js` の実装を移植した）
-3. `rp.id` は `creationOptions.rp.id` をそのまま使う。参照サンプルは
-   `appConfig.customDomain` で上書きできるようにしているが、本アプリでは creationOptions
-   の値に従う（カスタム URL ドメインを後で設定した場合も自動追従する）
+
+`rp.id` の決め方だけは変えている。参照サンプルは `appConfig.customDomain` で上書きできる
+ようにしているが、本アプリは `creationOptions.rp.id` をそのまま使う（カスタム URL ドメインを
+後で設定した場合も自動追従する）。
 
 登録フロー: `GET /api/passkeys/creation-options` → `challenge`/`user.id`/`excludeCredentials[].id`
 を `ArrayBuffer` に変換 → `navigator.credentials.create({ publicKey })` →
@@ -393,53 +413,50 @@ UI は一覧テーブル、「パスキーを追加」ボタン、各行の削�
   タイムアウト、同一デバイスへの登録済みなどで例外を投げる。`NotAllowedError` は
   これらを区別できないため、まとめた文言で案内する（詳細は「トラブルシューティング」を参照）。
 
-### スコープ外（意図的に未実装）
+### 未実装
 
-- **MFA (ngcmfa) ゲート**（参照サンプルは `claims` パラメータで `amr: ["ngcmfa"]` を要求し、
-  トークンの `iat` から鮮度を判定しているが、本実装では省略している。
-  `identity.flask.Auth` には認可リクエストへ `claims` を渡す口がなく
-  （`log_in()` に claims 引数がなく、MSAL の `initiate_auth_code_flow` が持つ
-  `claims_challenge` も転送していない）、また Graph はアプリトークンで呼ぶため
-  ユーザーの MFA 状態を知り得ない。これは Entra が強制するものではなく
-  **アプリの自主的なゲート**であり、将来入れる場合は `passkeys.py` の登録ハンドラと削除ハンドラの
-  先頭に鮮度チェックを置く）。
+- **MFA (ngcmfa) ゲート**: Microsoft は外部テナントの利用者要件として「ユーザーは、パスキーを
+  登録する前に MFA を完了する必要があります」（登録の直前5分以内）と明記している。
+  つまりこれは足せば良くなる追加機能ではなく、**本実装が満たせていない要件**である。
+  ただし判定できる場所はアプリ側にしかない。Graph をアプリ専用トークンで呼ぶ以上、
+  Graph 側にサインインしたユーザーの認証状態は渡らず、Entra は登録要求の時点で
+  MFA の鮮度を見ないためである。
+  参照サンプルは `claims` パラメータで `amr: ["ngcmfa"]` を要求し、トークンの `iat` から
+  鮮度を判定してこの要件を満たしている。本実装が省いたのは、`identity.flask.Auth` に
+  認可リクエストへ `claims` を渡す口がないため（`log_in()` に claims 引数がなく、MSAL の
+  `initiate_auth_code_flow` が持つ `claims_challenge` も転送していない）。入れる場合は
+  `passkeys.py` の登録ハンドラと削除ハンドラの先頭に鮮度チェックを置く。
+
+  → [パスキーでサインインする（エンド ユーザーの要件）](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-sign-in-with-passkey#end-user-requirements)
 - パスキー数の上限チェック（参照サンプルは 10）
 - 登録後または削除後に一覧へ反映されるのを待つリトライ / バックオフ
 - トースト通知、削除確認モーダル
 - カスタム URL ドメインの設定の自動化（`rp.id` は creationOptions から読むため、設定した場合は
   hosts と証明書のホスト名を差し替えるだけでコード変更は不要）
 
-## 制限
-
-- MFA (ngcmfa) の鮮度チェックは未実装。Graph はアプリ専用トークンで呼ぶため
-  Entra 側はユーザーの MFA 状態を判定できず、このゲートはアプリ側の実装事項になる。
-- Graph beta API を使っているため、本番利用は非推奨。
-
 ## 本番運用に向けた検討事項
 
-このリポジトリはローカル検証用の最小構成であり、そのまま本番投入すると以下が問題になる。
+このリポジトリはローカル検証用の最小構成である。Graph beta への依存と MFA 要件の未達は
+本番投入そのものを止めるので、この二つが先に来る。以下は、放置したときに問題が表面化するのが
+早い順に並べている。
 
 - **Graph beta API への依存**: `graph_passkeys.py` は `fido2Methods` を含め beta
-  エンドポイントのみを呼んでいる。beta はスキーマや挙動が予告なく変わりうるため、
-  本番では v1.0 への移行可否を継続的に確認するか、変更検知（スキーマの契約テストなど）を
-  用意すること。
+  エンドポイントのみを呼んでいる。同じ API は v1.0 にも出ているので移行先はあるが、
+  URL を差し替えるだけでは動かない。v1.0 は `challengeTimeoutInMinutes` を受け付けず
+  チャレンジは 5 分固定で、`excludeCredentials[].id` もパディング数を表す数字を付けない
+  素の base64url を返すため、「ブラウザ側 JS の設計」の `decodeGraphCredentialId` は不要になる。
+  外部テナントでの動作はこのリポジトリでは未検証。
+- **MFA 鮮度チェック未実装**（「未実装」参照）: Microsoft が利用者要件として挙げているものを
+  満たせていないので、本番に出すなら実装は必須。ローカル検証で登録が通ることは、
+  この要件が課されていないことを意味しない。
 - **クライアント シークレットの扱い**: `.env` に平文でシークレットを置いている。
   本番では Azure Key Vault などのシークレット管理サービスに保管し、可能であれば
   クライアント シークレットではなく**証明書ベースの認証**（`client_credential` に
   証明書を渡す）に切り替える。シークレットのローテーション手順も用意すること。
-- **TLS 証明書**: `mkcert` の自己署名証明書はローカル専用。本番では信頼された CA
-  発行の証明書を使い、Flask の開発サーバではなく WSGI サーバ（gunicorn 等）を
-  リバースプロキシ（nginx / Application Gateway 等）の背後で動かす。
-- **セッションストレージ**: `flask_session` はデフォルトでファイルベースの
-  セッションストア。複数インスタンスでのスケールアウトや再起動時の永続化を考えると、
-  Redis 等の外部ストアに切り替える必要がある。
-- **エラーメッセージの露出**: `_error_message` は Graph が返したエラーコードや
-  メッセージをほぼそのまま JSON で返している。本番ではクライアントへの露出情報を
-  絞り、詳細はサーバ側のログにのみ出す方が安全（情報漏えいの防止と攻撃者への手がかり抑制のため）。
-- **管理者の同意の権限範囲**: `UserAuthenticationMethod.ReadWrite.All` は
-  テナント内**全ユーザー**のパスキーを読み書きできる強い権限。本番では最小権限の
-  原則に沿って、可能なら対象範囲を絞る、あるいはこの権限を持つアプリへのアクセスを
-  厳格に制限する（監査ログや PIM などでの追加統制も検討）。
+- **管理者の同意の権限範囲**: 手順 6 の `UserAuthMethod-Passkey.ReadWrite.All` は
+  認証方法のうちパスキーだけに絞られているが、対象はテナント内**全ユーザー**のままで、
+  これより狭いアプリケーション許可は用意されていない。本番ではこの権限を持つアプリ自体への
+  アクセスを厳格に制限し、監査ログや PIM などで追加の統制を掛ける。
 - **パスキー ポリシーの緩和設定**: 動作確認のため
   「構成証明の強制（Enforce attestation）」「キーの制限（Enforce key restrictions）」を
   無効にしている。本番では組織のセキュリティ要件に応じて、認定済み認証器のみ許可する、
@@ -448,13 +465,20 @@ UI は一覧テーブル、「パスキーを追加」ボタン、各行の削�
   対策として `templates/passkeys.html` で `enforceCredentialProtectionPolicy` を
   `false` に上書きしている。これは Graph 側の暫定的な不整合に対する回避策であり、
   Microsoft 側の修正状況を継続的に確認し、不要になれば取り除くこと。
+- **TLS 証明書**: `mkcert` の自己署名証明書はローカル専用。本番では信頼された CA
+  発行の証明書を使い、Flask の開発サーバではなく WSGI サーバ（gunicorn 等）を
+  リバースプロキシ（nginx / Application Gateway 等）の背後で動かす。
+- **セッションストレージ**: `flask_session` はデフォルトでファイルベースの
+  セッションストア。複数インスタンスでのスケールアウトや再起動時の永続化を考えると、
+  Redis 等の外部ストアに切り替える必要がある。
 - **レート制限と監査ログ**: `/api/passkeys` 系エンドポイントにレート制限がない。
   総当たりや DoS への対策として API Management や WAF 等でのレート制限、
   および操作ログ（誰がいつ何を登録または削除したか）の記録を追加すること。
-- **MFA 鮮度チェック未実装**（「制限」参照）: 本番でパスキー登録前に
-  再認証（MFA の鮮度確認）を必須にする場合、アプリ側で別途実装が必要。
+- **エラーメッセージの露出**: `_error_message` は Graph が返したエラーコードや
+  メッセージをほぼそのまま JSON で返している。本番ではクライアントへの露出情報を
+  絞り、詳細はサーバ側のログにのみ出す方が安全（情報漏えいの防止と攻撃者への手がかり抑制のため）。
 
-## トラブルシューティング / FAQ
+## トラブルシューティング
 
 ### `creationOptions` (WebAuthn の `publicKey` 作成オプション) の JSON の見方
 
@@ -467,13 +491,10 @@ UI は一覧テーブル、「パスキーを追加」ボタン、各行の削�
 | `authenticatorSelection` | 使える認証器の条件。`authenticatorAttachment`（接続方式）、`requireResidentKey`（常駐/検出可能な資格情報を要求するか）、`userVerification`（生体認証などのユーザー確認を要求するか） |
 | `challenge` | リプレイ攻撃防止用のランダム値（署名対象） |
 | `excludeCredentials` | 既に登録済みの資格情報一覧（重複登録防止） |
-| `extensions` | CTAP2 拡張機能。`credProtect`（`credentialProtectionPolicy`）は「この資格情報をどの保護レベルで扱うか」を認証器に指示するもの |
+| `extensions` | CTAP2 拡張機能。`credProtect`（`credentialProtectionPolicy`）は「この資格情報をどの保護レベルで扱うか」を認証器に指示し、`enforceCredentialProtectionPolicy` はその保護レベルを満たせない認証器での登録を拒否させる（この2つが噛み合わないと `NotSupportedError` になる） |
 | `pubKeyCredParams` | 使用可能な署名アルゴリズム（`-7` = ES256、`-257` = RS256） |
 | `rp` | 依拠当事者（Relying Party）＝このテナントのドメイン情報 |
 | `user` | 登録対象ユーザーの情報 |
-
-`extensions.enforceCredentialProtectionPolicy` は、指定した `credentialProtectionPolicy`
-の保護レベルを認証器が満たせない場合に**登録自体を拒否させる**フラグ。
 
 参考:
 - [PublicKeyCredentialCreationOptions（W3C WebAuthn Level 3 仕様）](https://www.w3.org/TR/webauthn-3/#dictionary-makecredentialoptions)
@@ -510,7 +531,8 @@ Graph の `fido2Methods` はアプリ専用トークン（クライアント ク
 
 1. **外部テナントに切り替えた状態で**アプリの登録 > **API のアクセス許可** > **+ 追加** > **Microsoft Graph**
 2. **「アプリケーションの許可」**（「委任されたアクセス許可」ではない）を選択
-3. `UserAuthenticationMethod.ReadWrite.All`（または `UserAuthMethod-Passkey.ReadWrite.All`）を追加
+3. `UserAuthMethod-Passkey.ReadWrite.All`（手順 6 で追加したものと同じ）を選ぶ。
+   ポータルの一覧に出てこないテナントでは、上位の `UserAuthenticationMethod.ReadWrite.All` でも呼べる
 4. **「[テナント名] に管理者の同意を与えます」**ボタンを押し、管理者の同意列が
    緑のチェックになることを確認
 
