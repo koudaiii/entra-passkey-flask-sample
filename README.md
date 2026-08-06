@@ -283,17 +283,19 @@ WebAuthn を伴う登録フロー全体は自動テスト対象外で、ブラ�
 
 ### 参照サンプルとの構成差
 
-Microsoft はパスキー登録の組み込み UI を提供していないので、管理ページは自前で作るしかない。
+Microsoft は組み込みのパスキー登録エクスペリエンスを提供していないため、資格情報管理の
+画面は FIDO2 プロビジョニング API を使って自作する。
 サインインそのものは `ms-identity-python` の `identity.flask.Auth` に任せ、その上に
 FIDO2 プロビジョニング API
 （[fido2AuthenticationMethod](https://learn.microsoft.com/en-us/graph/api/resources/fido2authenticationmethod?view=graph-rest-beta)）
 を叩く JSON API と管理ページを足している。
 
-参考にした [passkey-sample (React SPA)](https://github.com/Azure-Samples/ms-identity-ciam-native-javascript-samples/tree/main/passkey-sample)
-は Graph をアプリ専用トークン（client credentials）で呼ぶために **client secret をブラウザに置き**、
-トークンエンドポイントの CORS を回避するプロキシ（`cors.js`）を別プロセスで起動している。
-本アプリは Flask = confidential client なので、client secret はサーバ側に留まり、CORS プロキシは
-不要。アプリトークンのキャッシュも MSAL の内部キャッシュに任せている。
+参考にした [passkey-sample](https://github.com/Azure-Samples/ms-identity-ciam-native-javascript-samples/tree/main/passkey-sample)
+との違いは、クライアントの種別に由来する。参照サンプルは React SPA（public client）で、
+Graph をアプリ専用トークン（client credentials）で呼ぶために client secret をブラウザ側に持ち、
+トークンエンドポイントの CORS を回避するプロキシ（`cors.js`）を別プロセスで起動する構成。
+本アプリは Flask（confidential client）なので、client secret はサーバ側に置き、CORS プロキシは
+使わない。アプリトークンのキャッシュも MSAL の内部キャッシュに任せている。
 
 ### フロー
 
@@ -426,6 +428,8 @@ UI は一覧テーブル、「パスキーを追加」ボタン、各行の削�
   認可リクエストへ `claims` を渡す口がないため（`log_in()` に claims 引数がなく、MSAL の
   `initiate_auth_code_flow` が持つ `claims_challenge` も転送していない）。入れる場合は
   `passkeys.py` の登録ハンドラと削除ハンドラの先頭に鮮度チェックを置く。
+  外部テナントは条件付きアクセスの認証強度に対応していないため、MFA の鮮度は
+  条件付きアクセス ポリシーでは表現できない（「制限事項」を参照）。
 
   → [パスキーでサインインする（エンド ユーザーの要件）](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-sign-in-with-passkey#end-user-requirements)
 - パスキー数の上限チェック（参照サンプルは 10）
@@ -433,6 +437,40 @@ UI は一覧テーブル、「パスキーを追加」ボタン、各行の削�
 - トースト通知、削除確認モーダル
 - カスタム URL ドメインの設定の自動化（`rp.id` は creationOptions から読むため、設定した場合は
   hosts と証明書のホスト名を差し替えるだけでコード変更は不要）
+
+## 制限事項
+
+外部テナントのパスキーについて、公式ドキュメントに記載されている事項のうち、
+このリポジトリの構成に関わるもの。
+
+- **登録できるアカウント**: メール + パスワード、およびユーザー名 + パスワードのローカル
+  アカウント。メール ワンタイム パスコード、フェデレーション IdP、ソーシャル IdP の
+  ユーザーへのサポートはロードマップに記載されている。
+- **登録の実行者**: 登録には本人の物理的な存在と、ローカルの生体認証または PIN
+  ジェスチャが必要。管理者はパスキーの削除と再登録の要求ができる。管理者
+  プロビジョニング API は Entra ID でプレビュー中で、外部テナントはその範囲に含まれない。
+- **条件付きアクセス**: 外部テナントは条件付きアクセスの認証強度に対応していない。
+  条件付きアクセス ポリシーで MFA を要求することはできる。
+- **資格情報管理**: 組み込みのパスキー登録エクスペリエンスはなく、FIDO2 プロビジョニング
+  API を使って自作する。必要な権限は `UserAuthMethod-Passkey.ReadWrite.All` で、
+  対象はテナント内の全ユーザー。より権限の狭い資格情報管理 API はロードマップに
+  記載されている。
+- **カスタム URL ドメイン**: 公式手順では前提条件に挙げられており、パスキーは RP として
+  その URL に対して登録される。このリポジトリは既定の `<subdomain>.ciamlogin.com` を
+  `rp.id` として使っている。WebAuthn の資格情報は `rp.id` に紐づくため、ドメインを
+  変更すると変更前に登録したパスキーはそのままでは使えない。
+- **関連オリジン**: 未対応。パスキーは 1 つのドメイン (RP) に対して登録され、複数ドメイン間で
+  共有できない。サポートはロードマップに記載されている。
+- **ブラウザ**: 埋め込み Web ビュー (WebView / WKWebView) は WebAuthn のサポートが限定的
+  または非対応のため、システム ブラウザまたはデバイスの既定のブラウザを使う。モバイルの
+  ネイティブ認証 API でのパスキーはロードマップに記載されている。
+- **Azure AD B2C**: パスキーは外部テナントの Microsoft Entra 外部 ID で使用でき、
+  Azure AD B2C では使用できない。
+- **Graph API**: Entra ID と外部テナントは同じ Microsoft Graph のインターフェースを提供し、
+  API ごとに外部テナントでの対応範囲が異なる。このリポジトリが beta を使っている点は
+  「本番運用に向けた検討事項」を参照。
+
+→ [パスキーでサインインする（よく寄せられる質問）](https://learn.microsoft.com/ja-jp/entra/external-id/customers/how-to-sign-in-with-passkey)
 
 ## 本番運用に向けた検討事項
 
@@ -463,8 +501,8 @@ UI は一覧テーブル、「パスキーを追加」ボタン、各行の削�
   構成証明を要求するなど、ポリシーを見直すこと。
 - **`enforceCredentialProtectionPolicy` のクライアント側上書き**: 「NotSupportedError」
   対策として `templates/passkeys.html` で `enforceCredentialProtectionPolicy` を
-  `false` に上書きしている。これは Graph 側の暫定的な不整合に対する回避策であり、
-  Microsoft 側の修正状況を継続的に確認し、不要になれば取り除くこと。
+  `false` に上書きしている。Graph が返す `creationOptions` の組み合わせに対する回避策なので、
+  応答が変われば不要になる。動作を定期的に確認し、不要になれば取り除くこと。
 - **TLS 証明書**: `mkcert` の自己署名証明書はローカル専用。本番では信頼された CA
   発行の証明書を使い、Flask の開発サーバではなく WSGI サーバ（gunicorn 等）を
   リバースプロキシ（nginx / Application Gateway 等）の背後で動かす。
@@ -477,6 +515,40 @@ UI は一覧テーブル、「パスキーを追加」ボタン、各行の削�
 - **エラーメッセージの露出**: `_error_message` は Graph が返したエラーコードや
   メッセージをほぼそのまま JSON で返している。本番ではクライアントへの露出情報を
   絞り、詳細はサーバ側のログにのみ出す方が安全（情報漏えいの防止と攻撃者への手がかり抑制のため）。
+
+## コスト
+
+外部テナントは月間アクティブ ユーザー (MAU) 課金で、その月にテナントへ認証した一意の
+外部ユーザー数で決まる。無料枠の範囲に収まっていれば料金は発生しないため、
+このリポジトリのようなローカル検証では通常コストはかからない。パスキー自体に
+追加料金はない（パスキーは基本の MAU 料金に含まれる）。
+
+**Premium アドオンの料金は、基本の MAU 料金に加算される**（置き換えではない）。
+このリポジトリの構成に関わるものは次の3つ。
+
+- **Go-Local**（データ所在地）: 外部 ID のデータを特定の地理的リージョンに保管する
+  アドオン。現在はオーストラリアと日本で利用できる。課金は MAU ベースで、
+  Microsoft Entra 外部 ID Basic の MAU 料金**に加えて** Go-Local アドオンの MAU 料金が
+  発生する。公式ドキュメントのシナリオでは、対話サインインが 8,000 MAU のアプリで
+  Go-Local を有効にした場合、8,000 MAU 分の Basic 料金と Go-Local アドオン料金の
+  両方が課金される。日本国内にデータを置く場合はこの加算分を見積もりに含める。
+- **SMS 電話認証**: SMS ベースの認証イベントごとのトランザクション課金。パスキーの登録には
+  事前の MFA が必要なため（「未実装」参照）、MFA を SMS で行う場合はこの料金がかかる。
+  パスキー自体は追加コストなしで全価格レベルに含まれる。現時点でユーザー単位や
+  電話番号単位で費用を分析する機能は提供されていない。
+- **M2M 認証**: 外部テナントに対するクライアント クレデンシャル フローの認証は
+  トランザクション課金で、MAU には数えられない。このアプリも
+  `graph_passkeys.app_token()` でアプリ専用トークンを取得している（authority は
+  `login.microsoftonline.com/<tenant-id>` だが、テナント自体は外部テナント）。
+  これがアドオンの課金対象に含まれるかは公式ドキュメントからは判別できないため、
+  価格ページと請求内訳で確認すること。MSAL のトークン キャッシュにより、実際の要求は
+  トークンの有効期間（最大 1 時間）ごとに 1 回になる。
+
+課金には Azure サブスクリプションへのテナントのリンクが必要。実際の単価は変動するため、
+必ず最新の価格ページで確認すること。
+
+→ [Microsoft Entra 外部 ID の価格と課金の概要](https://learn.microsoft.com/ja-jp/entra/external-id/external-identities-pricing) /
+[外部 ID の価格](https://aka.ms/ExternalIDPricing)
 
 ## トラブルシューティング
 
@@ -559,7 +631,7 @@ Graph の `creationOptions`（`navigator.credentials.create()` に渡す WebAuth
 
 `templates/passkeys.html` の `add()` で、`enforceCredentialProtectionPolicy` を
 クライアント側で `false` に上書きしてから `navigator.credentials.create()` に渡すことで
-回避している。Entra / Graph 側の既知の挙動であり、アプリ側のコードでの対処が必要。
+回避している。この組み合わせが返ることがあるため、クライアント側で値を調整している。
 
 参考:
 - [CTAP2.1 credProtect extension（FIDO Alliance 公式仕様）](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#sctn-credProtect-extension)
@@ -579,9 +651,8 @@ Mac 内蔵の Touch ID による **iCloud キーチェーンの同期パスキ�
 
 ### パスキー一覧で「最終使用」（`lastUsedDateTime`）が `-` のまま更新されない
 
-Entra ID / Entra External ID (CIAM) 側の既知の制限。`lastUsedDateTime` は Graph beta の
-比較的新しいプロパティで、パスキーで実際にサインインしても更新されないことがある
-（CIAM テナントに限らず一般の Entra ID テナントでも報告あり）。アプリ側の実装の問題ではない。
+`lastUsedDateTime` は Graph beta の比較的新しいプロパティで、パスキーでサインインしても
+更新されない場合がある。
 
 実際のサインイン履歴を確認したい場合は、この値ではなく Entra ID の**サインイン ログ**を
 参照すること。
